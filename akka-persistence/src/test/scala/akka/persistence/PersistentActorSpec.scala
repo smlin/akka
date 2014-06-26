@@ -299,6 +299,23 @@ object PersistentActorSpec {
     }
   }
 
+  class AsyncPersistHandlerCorrelationCheck(name: String) extends ExamplePersistentActor(name) {
+    var counter = 0
+
+    val receiveCommand: Receive = commonBehavior orElse {
+      case Cmd(data) ⇒
+        persistAsync(Evt(data)) { evt ⇒
+          if (data != evt.data)
+            sender() ! s"Expected [$data] bot got [${evt.data}]"
+        }
+    }
+
+    private def incCounter(): Int = {
+      counter += 1
+      counter
+    }
+  }
+
   class UserStashFailureProcessor(name: String) extends ExamplePersistentActor(name) {
     val receiveCommand: Receive = commonBehavior orElse {
       case Cmd(data) ⇒
@@ -660,6 +677,13 @@ abstract class PersistentActorSpec(config: Config) extends AkkaSpec(config) with
       expectMsg("c-ea2-6")
 
       expectNoMsg(100.millis)
+    }
+    "correlate persistAsync handlers after restart" in {
+      val processor = namedProcessor[AsyncPersistHandlerCorrelationCheck]
+      for (n ← 1 to 100) processor ! Cmd(n)
+      processor ! "boom"
+      for (n ← 1 to 20) processor ! Cmd(n)
+      expectNoMsg(5.seconds)
     }
     "allow deferring handlers in order to provide ordered processing in respect to persist handlers" in {
       val processor = namedProcessor[DeferringWithPersistActor]
