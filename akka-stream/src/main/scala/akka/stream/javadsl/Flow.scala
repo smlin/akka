@@ -153,6 +153,13 @@ abstract class Flow[T] {
   def fold[U](zero: U, f: Function2[U, T, U]): Flow[U]
 
   /**
+   * Invoke the given function for every received element, giving it its previous
+   * output (or the given “zero” value) and the element as input. The returned stream
+   * will receive all results of the given function evaluation.
+   */
+  def scan[U](zero: U, f: Function2[U, T, U]): Flow[U]
+
+  /**
    * Discard the given number of elements at the beginning of the stream.
    */
   def drop(n: Int): Flow[T]
@@ -421,6 +428,9 @@ private[akka] class FlowAdapter[T](delegate: SFlow[T]) extends Flow[T] {
 
   override def fold[U](zero: U, f: Function2[U, T, U]): Flow[U] =
     new FlowAdapter(delegate.fold(zero) { case (a, b) ⇒ f.apply(a, b) })
+
+  override def scan[U](zero: U, f: Function2[U, T, U]): Flow[U] =
+    new FlowAdapter(delegate.scan(zero) { case (a, b) ⇒ f.apply(a, b) })
 
   override def drop(n: Int): Flow[T] = new FlowAdapter(delegate.drop(n))
 

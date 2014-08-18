@@ -92,6 +92,13 @@ abstract class Duct[In, Out] {
   def fold[U](zero: U, f: Function2[U, Out, U]): Duct[In, U]
 
   /**
+   * Invoke the given function for every received element, giving it its previous
+   * output (or the given “zero” value) and the element as input. The returned stream
+   * will receive all results of the given function evaluation.
+   */
+  def scan[U](zero: U, f: Function2[U, Out, U]): Duct[In, U]
+
+  /**
    * Discard the given number of elements at the beginning of the stream.
    */
   def drop(n: Int): Duct[In, Out]
@@ -350,6 +357,9 @@ private[akka] class DuctAdapter[In, T](delegate: SDuct[In, T]) extends Duct[In, 
 
   override def fold[U](zero: U, f: Function2[U, T, U]): Duct[In, U] =
     new DuctAdapter(delegate.fold(zero) { case (a, b) ⇒ f.apply(a, b) })
+
+  override def scan[U](zero: U, f: Function2[U, T, U]): Duct[In, U] =
+    new DuctAdapter(delegate.scan(zero) { case (a, b) ⇒ f.apply(a, b) })
 
   override def drop(n: Int): Duct[In, T] = new DuctAdapter(delegate.drop(n))
 

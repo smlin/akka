@@ -174,8 +174,17 @@ private[akka] trait Builder[Out] {
   def fold[U](zero: U)(f: (U, Out) ⇒ U): Thing[U] =
     transform(new FoldTransformer[U](zero, f))
 
+  def scan[U](zero: U)(f: (U, Out) ⇒ U): Thing[U] =
+    transform(new ScanTransformer[U](zero, f))
+
   // Without this class compiler complains about
   // "Parameter type in structural refinement may not refer to an abstract type defined outside that refinement"
+  class ScanTransformer[S](var state: S, f: (S, Out) ⇒ S) extends Transformer[Out, S] {
+    override def onNext(in: Out): immutable.Seq[S] = { state = f(state, in); List(state) }
+    override def onTermination(e: Option[Throwable]): immutable.Seq[S] = Nil
+    override def name = "scan"
+  }
+
   class FoldTransformer[S](var state: S, f: (S, Out) ⇒ S) extends Transformer[Out, S] {
     override def onNext(in: Out): immutable.Seq[S] = { state = f(state, in); Nil }
     override def onTermination(e: Option[Throwable]): immutable.Seq[S] = List(state)

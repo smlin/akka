@@ -81,6 +81,13 @@ trait Duct[In, +Out] {
   def fold[U](zero: U)(f: (U, Out) ⇒ U): Duct[In, U]
 
   /**
+   * Invoke the given function for every received element, giving it its previous
+   * output (or the given “zero” value) and the element as input. The returned stream
+   * will receive all results of the given function evaluation.
+   */
+  def scan[U](zero: U)(f: (U, Out) ⇒ U): Duct[In, U]
+
+  /**
    * Discard the given number of elements at the beginning of the stream.
    */
   def drop(n: Int): Duct[In, Out]

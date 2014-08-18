@@ -49,6 +49,10 @@ public class DuctTest {
       public java.util.List<String> apply(java.util.List<String> elem) {
         return elem;
       }
+    }).scan("", new Function2<String, String, String>() {
+      public String apply(String acc, String elem) {
+        return acc + elem;
+      }
     }).fold("", new Function2<String, String, String>() {
       public String apply(String acc, String elem) {
         return acc + elem;
@@ -64,7 +68,7 @@ public class DuctTest {
 
     publisher.subscribe(inputSubscriber);
 
-    probe.expectMsgEquals("de");
+    probe.expectMsgEquals("dde");
   }
 
   @Test
