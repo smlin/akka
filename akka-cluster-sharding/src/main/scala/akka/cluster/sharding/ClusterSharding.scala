@@ -19,6 +19,7 @@ import akka.actor.NoSerializationVerificationNeeded
 import akka.actor.PoisonPill
 import akka.actor.Props
 import akka.cluster.Cluster
+import akka.cluster.ddata.DistributedData
 import akka.cluster.singleton.ClusterSingletonManager
 import akka.persistence.BackoffSupervisor
 import akka.util.ByteString
@@ -414,6 +415,7 @@ private[akka] class ClusterShardingGuardian extends Actor {
 
   val cluster = Cluster(context.system)
   val sharding = ClusterSharding(context.system)
+  val replicator = DistributedData(context.system).replicator
 
   private def coordinatorSingletonManagerName(encName: String): String =
     encName + "Coordinator"
@@ -430,7 +432,7 @@ private[akka] class ClusterShardingGuardian extends Actor {
       val cPath = coordinatorPath(encName)
       val shardRegion = context.child(encName).getOrElse {
         if (context.child(cName).isEmpty) {
-          val coordinatorProps = ShardCoordinator.props(typeName, settings, allocationStrategy)
+          val coordinatorProps = ShardCoordinator.props(typeName, settings, allocationStrategy, replicator)
           val singletonProps = BackoffSupervisor.props(
             childProps = coordinatorProps,
             childName = "coordinator",

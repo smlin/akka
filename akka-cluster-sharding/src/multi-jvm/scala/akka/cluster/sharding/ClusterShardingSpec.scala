@@ -3,6 +3,7 @@
  */
 package akka.cluster.sharding
 
+import akka.cluster.ddata.{ ReplicatorSettings, Replicator }
 import akka.cluster.sharding.ShardCoordinator.Internal.{ ShardStopped, HandOff }
 import akka.cluster.sharding.ShardRegion.Passivate
 import akka.cluster.sharding.ShardRegion.GetCurrentRegions
@@ -44,6 +45,7 @@ object ClusterShardingSpec extends MultiNodeConfig {
     akka.cluster.auto-down-unreachable-after = 0s
     akka.cluster.down-removal-margin = 5s
     akka.cluster.roles = ["backend"]
+    akka.cluster.distributed-data.gossip-interval = 1s
     akka.persistence.journal.plugin = "akka.persistence.journal.leveldb-shared"
     akka.persistence.journal.leveldb-shared.store {
       native = off
@@ -194,6 +196,9 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
   }
 
   def createCoordinator(): Unit = {
+    val replicator = system.actorOf(Replicator.props(
+      ReplicatorSettings(system).withGossipInterval(1.second).withMaxDeltaElements(10)), "replicator")
+
     def coordinatorProps(typeName: String, rebalanceEnabled: Boolean) = {
       val allocationStrategy = new ShardCoordinator.LeastShardAllocationStrategy(rebalanceThreshold = 2, maxSimultaneousRebalance = 1)
       val cfg = ConfigFactory.parseString(s"""
@@ -202,7 +207,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       rebalance-interval = ${if (rebalanceEnabled) "2s" else "3600s"}
       """).withFallback(system.settings.config.getConfig("akka.cluster.sharding"))
       val settings = ClusterShardingSettings(cfg)
-      ShardCoordinator.props(typeName, settings, allocationStrategy)
+      ShardCoordinator.props(typeName, settings, allocationStrategy, replicator)
     }
 
     List("counter", "rebalancingCounter", "PersistentCounterEntities", "AnotherPersistentCounter",
