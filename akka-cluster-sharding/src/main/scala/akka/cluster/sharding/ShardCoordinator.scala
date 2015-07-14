@@ -590,7 +590,7 @@ class ShardCoordinator(typeName: String, settings: ClusterShardingSettings,
   def activate() = {
     context.become(active)
     unstashAll()
-    log.info("Sharding Coordinator was moved to the active state")
+    log.info("Sharding Coordinator was moved to the active state {}", state)
   }
 
   def update(evt: DomainEvent): Unit = {

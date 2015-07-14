@@ -96,7 +96,7 @@ private[akka] class Shard(
   extractShardId: ShardRegion.ExtractShardId,
   handOffStopMessage: Any) extends Actor with ActorLogging {
 
-  import ShardRegion.{ handOffStopperProps, EntityId, Msg, Passivate }
+  import ShardRegion.{ handOffStopperProps, EntityId, Msg, Passivate, ShardInitialized }
   import ShardCoordinator.Internal.{ HandOff, ShardStopped }
   import Shard.{ State, RestartEntity, EntityStopped, EntityStarted }
   import akka.cluster.sharding.ShardCoordinator.Internal.CoordinatorMessage
@@ -110,6 +110,10 @@ private[akka] class Shard(
   var messageBuffers = Map.empty[EntityId, Vector[(Msg, ActorRef)]]
 
   var handOffStopper: Option[ActorRef] = None
+
+  initialized()
+
+  def initialized(): Unit = context.parent ! ShardInitialized(shardId)
 
   def totalBufferSize = messageBuffers.foldLeft(0) { (sum, entity) ⇒ sum + entity._2.size }
 
@@ -295,6 +299,9 @@ private[akka] class PersistentShard(
 
   var persistCount = 0
 
+  // would be initialized after recovery completed
+  override def initialized(): Unit = {}
+
   override def receive = receiveCommand
 
   override def processChange[A](event: A)(handler: A ⇒ Unit): Unit = {
@@ -314,7 +321,10 @@ private[akka] class PersistentShard(
     case EntityStarted(id)                 ⇒ state = state.copy(state.entities + id)
     case EntityStopped(id)                 ⇒ state = state.copy(state.entities - id)
     case SnapshotOffer(_, snapshot: State) ⇒ state = snapshot
-    case RecoveryCompleted                 ⇒ state.entities foreach getEntity
+    case RecoveryCompleted ⇒
+      state.entities foreach getEntity
+      super.initialized()
+      log.debug("Shard recovery completed {}", shardId)
   }
 
   override def entityTerminated(ref: ActorRef): Unit = {
