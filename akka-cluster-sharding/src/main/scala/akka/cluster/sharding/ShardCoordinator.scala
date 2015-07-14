@@ -22,16 +22,7 @@ import akka.cluster.ClusterEvent.ClusterShuttingDown
 import akka.cluster.ClusterEvent.CurrentClusterState
 import akka.cluster.ddata.LWWRegisterKey
 import akka.cluster.ddata.LWWRegister
-import akka.cluster.ddata.Replicator.Get
-import akka.cluster.ddata.Replicator.GetSuccess
-import akka.cluster.ddata.Replicator.GetFailure
-import akka.cluster.ddata.Replicator.ModifyFailure
-import akka.cluster.ddata.Replicator.NotFound
-import akka.cluster.ddata.Replicator.ReadMajority
-import akka.cluster.ddata.Replicator.Update
-import akka.cluster.ddata.Replicator.UpdateSuccess
-import akka.cluster.ddata.Replicator.UpdateTimeout
-import akka.cluster.ddata.Replicator.WriteMajority
+import akka.cluster.ddata.Replicator._
 import akka.dispatch.ExecutionContexts
 import akka.pattern.pipe
 
@@ -416,28 +407,48 @@ class ShardCoordinator(typeName: String, settings: ClusterShardingSettings,
 
     case GetFailure(CoordinatorStateKey, _) ⇒
       log.error(
-        "The ShardCoordinator was unable to get an initial state within 'waiting-for-state-timeout' (was retried): {} millis",
+        "The ShardCoordinator was unable to get an initial state within 'waiting-for-state-timeout' (was retrying): {} millis",
         waitingForStateTimeout.toMillis)
       getState()
 
     case NotFound(CoordinatorStateKey, _) ⇒ activate()
-    case m                                ⇒ stash()
   }
 
   def active: Receive = {
     case UpdateSuccess(CoordinatorStateKey, Some(evt: DomainEvent)) ⇒
-      log.debug("The coordinator state was successfully updated to {}", evt)
+      log.debug("The coordinator state was successfully updated with {}", evt)
+      evt match {
+        case ShardRegionRegistered(region) ⇒
+          val firstRegion = state.regions.isEmpty
+
+          state = state.updated(evt)
+          context.watch(region)
+          region ! RegisterAck(self)
+
+          if (firstRegion)
+            allocateShardHomes()
+        case _ ⇒
+      }
 
     case UpdateTimeout(CoordinatorStateKey, Some(evt: DomainEvent)) ⇒
-      log.error(
-        "The ShardCoordinator was unable to update a distributed state within 'updating-state-timeout' (was retried): {} millis",
-        updatingStateTimeout.toMillis)
-      sendUpdate(evt)
+      evt match {
+        case ShardRegionRegistered(region) ⇒
+          log.warning(
+            "The ShardCoordinator was unable to update a distributed state within 'updating-state-timeout'={} millis, event={}",
+            updatingStateTimeout.toMillis,
+            evt)
+        case _ ⇒
+          log.error(
+            "The ShardCoordinator was unable to update a distributed state within 'updating-state-timeout'={} millis (was retrying), event={}",
+            updatingStateTimeout.toMillis,
+            evt)
+          sendUpdate(evt)
+      }
 
     case ModifyFailure(CoordinatorStateKey, error, cause, Some(evt: DomainEvent)) ⇒
       log.error(
         cause,
-        "The ShardCoordinator was unable to update a distributed state with error {}. Was retried with event {}.",
+        "The ShardCoordinator was unable to update a distributed state with error {}. Was retrying with event {}.",
         error,
         evt)
       sendUpdate(evt)
@@ -449,14 +460,7 @@ class ShardCoordinator(typeName: String, settings: ClusterShardingSettings,
         sender() ! RegisterAck(self)
       else {
         gracefulShutdownInProgress -= region
-        val firstRegion = state.regions.isEmpty
-
-        update(ShardRegionRegistered(region))
-        context.watch(region)
-        sender() ! RegisterAck(self)
-
-        if (firstRegion)
-          allocateShardHomes()
+        sendUpdate(ShardRegionRegistered(region))
       }
 
     case RegisterProxy(proxy) ⇒
@@ -601,10 +605,12 @@ class ShardCoordinator(typeName: String, settings: ClusterShardingSettings,
   def getState(): Unit =
     replicator ! Get(CoordinatorStateKey, ReadMajority(waitingForStateTimeout))
 
-  def sendUpdate(evt: DomainEvent) =
+  def sendUpdate(evt: DomainEvent) = {
+    val s = state
     replicator ! Update(CoordinatorStateKey, LWWRegister(State.empty), WriteMajority(updatingStateTimeout), Some(evt)) { reg ⇒
-      reg.withValue(reg.value.updated(evt))
+      reg.withValue(s)
     }
+  }
 
   def regionTerminated(ref: ActorRef): Unit =
     if (state.regions.contains(ref)) {
