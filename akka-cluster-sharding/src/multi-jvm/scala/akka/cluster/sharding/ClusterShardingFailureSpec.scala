@@ -46,6 +46,7 @@ object ClusterShardingFailureSpec extends MultiNodeConfig {
     akka.persistence.snapshot-store.local.dir = "target/snapshots-ClusterShardingFailureSpec"
     akka.cluster.sharding.coordinator-failure-backoff = 3s
     akka.cluster.sharding.shard-failure-backoff = 3s
+    akka.cluster.distributed-data.gossip-interval = 2 s
     """))
 
   testTransport(on = true)

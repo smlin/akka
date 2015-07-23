@@ -451,6 +451,7 @@ private[akka] class ClusterShardingGuardian extends Actor {
         context.actorOf(ShardRegion.props(
           typeName = typeName,
           entityProps = entityProps,
+          replicator = replicator,
           settings = settings,
           coordinatorPath = cPath,
           extractEntityId = extractEntityId,
@@ -467,6 +468,7 @@ private[akka] class ClusterShardingGuardian extends Actor {
       val shardRegion = context.child(encName).getOrElse {
         context.actorOf(ShardRegion.proxyProps(
           typeName = typeName,
+          replicator = replicator,
           settings = settings,
           coordinatorPath = cPath,
           extractEntityId = extractEntityId,

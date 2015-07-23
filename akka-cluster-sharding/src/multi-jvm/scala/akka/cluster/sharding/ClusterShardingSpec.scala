@@ -3,7 +3,7 @@
  */
 package akka.cluster.sharding
 
-import akka.cluster.ddata.{ ReplicatorSettings, Replicator }
+import akka.cluster.ddata.{ DistributedData, ReplicatorSettings, Replicator }
 import akka.cluster.sharding.ShardCoordinator.Internal.{ ShardStopped, HandOff }
 import akka.cluster.sharding.ShardRegion.Passivate
 import akka.cluster.sharding.ShardRegion.GetCurrentRegions
@@ -228,6 +228,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
   }
 
   def createRegion(typeName: String, rememberEntities: Boolean): ActorRef = {
+    val replicator = DistributedData(system).replicator
     val cfg = ConfigFactory.parseString("""
       retry-interval = 1s
       shard-failure-backoff = 1s
@@ -238,6 +239,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       .withRememberEntities(rememberEntities)
     system.actorOf(ShardRegion.props(
       typeName = typeName,
+      replicator = replicator,
       entityProps = qualifiedCounterProps(typeName),
       settings = settings,
       coordinatorPath = "/user/" + typeName + "Coordinator/singleton/coordinator",
@@ -363,6 +365,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
         val settings = ClusterShardingSettings(cfg)
         val proxy = system.actorOf(ShardRegion.proxyProps(
           typeName = "counter",
+          DistributedData(system).replicator,
           settings,
           coordinatorPath = "/user/counterCoordinator/singleton/coordinator",
           extractEntityId = extractEntityId,
@@ -813,7 +816,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
           for (n ← 2 to 12) {
             val entity = system.actorSelection(rebalancingPersistentRegion.path / (n % 12).toString / n.toString)
             entity ! Identify(n)
-            receiveOne(3 seconds) match {
+            receiveOne(5 seconds) match {
               case ActorIdentity(id, Some(_)) if id == n ⇒ count = count + 1
               case ActorIdentity(id, None)               ⇒ //Not on the fifth shard
             }

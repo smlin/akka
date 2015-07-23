@@ -411,6 +411,7 @@ class ShardCoordinator(typeName: String, settings: ClusterShardingSettings,
         waitingForStateTimeout.toMillis)
       getState()
 
+    case DataDeleted(CoordinatorStateKey) ⇒ activate()
     case NotFound(CoordinatorStateKey, _) ⇒ activate()
   }
 
@@ -419,14 +420,18 @@ class ShardCoordinator(typeName: String, settings: ClusterShardingSettings,
       log.debug("The coordinator state was successfully updated with {}", evt)
       evt match {
         case ShardRegionRegistered(region) ⇒
-          val firstRegion = state.regions.isEmpty
+          if (state.regions.contains(region))
+            sender() ! RegisterAck(self)
+          else {
+            val firstRegion = state.regions.isEmpty
 
-          state = state.updated(evt)
-          context.watch(region)
-          region ! RegisterAck(self)
+            state = state.updated(evt)
+            context.watch(region)
+            region ! RegisterAck(self)
 
-          if (firstRegion)
-            allocateShardHomes()
+            if (firstRegion)
+              allocateShardHomes()
+          }
         case _ ⇒
       }
 
