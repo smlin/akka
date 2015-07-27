@@ -210,7 +210,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       ShardCoordinator.props(typeName, settings, allocationStrategy, replicator)
     }
 
-    List("counter", "rebalancingCounter", "PersistentCounterEntities", "AnotherPersistentCounter",
+    List("counter", "anotherCounter", "rebalancingCounter", "PersistentCounterEntities", "AnotherPersistentCounter",
       "PersistentCounter", "RebalancingPersistentCounter", "AutoMigrateRegionTest").foreach { typeName ⇒
         val rebalanceEnabled = typeName.toLowerCase.startsWith("rebalancing")
         val singletonProps = BackoffSupervisor.props(
@@ -250,6 +250,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
   }
 
   lazy val region = createRegion("counter", rememberEntities = false)
+  lazy val anotherCounterRegion = createRegion("anotherCounter", rememberEntities = false)
   lazy val rebalancingRegion = createRegion("rebalancingCounter", rememberEntities = false)
 
   lazy val persistentEntitiesRegion = createRegion("PersistentCounterEntities", rememberEntities = true)
@@ -826,6 +827,42 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       }
 
       enterBarrier("after-16")
+    }
+
+    // TODO: move this test to right place
+    "do not duplicate shards after partial cluster crash" in within(40.seconds) {
+      runOn(controller) {
+        testConductor.exit(fourth, 0).await
+      }
+      enterBarrier("fourth-stopped")
+
+      // TODO: mute gossips to sixth
+      runOn(fifth) {
+        anotherCounterRegion ! EntityEnvelope(1, Increment)
+        anotherCounterRegion ! Get(1)
+        expectMsg(1)
+      }
+      runOn(sixth) {
+        anotherCounterRegion ! EntityEnvelope(2, Increment)
+        anotherCounterRegion ! Get(2)
+        expectMsg(1)
+      }
+      enterBarrier("another-shards-allocated")
+
+      runOn(controller) {
+        testConductor.exit(third, 0)
+          .zip(testConductor.exit(fifth, 0))
+          .await
+      }
+      enterBarrier("after-cluster-failure")
+
+      runOn(sixth) {
+        anotherCounterRegion ! EntityEnvelope(2, Increment)
+        anotherCounterRegion ! Get(2)
+        expectMsg(2)
+      }
+
+      enterBarrier("after-17")
     }
   }
 }
