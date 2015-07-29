@@ -38,7 +38,7 @@ object ClusterShardingSpec extends MultiNodeConfig {
   val fifth = role("fifth")
   val sixth = role("sixth")
 
-  commonConfig(ConfigFactory.parseString("""
+  commonConfig(debugConfig(true) withFallback ConfigFactory.parseString("""
     akka.loglevel = INFO
     akka.actor.provider = "akka.cluster.ClusterActorRefProvider"
     akka.remote.log-remote-lifecycle-events = off
@@ -836,7 +836,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       }
       enterBarrier("fourth-stopped")
 
-      // TODO: mute gossips to sixth
+      // TODO: mute gossips to sixth. How this can be done?
       runOn(fifth) {
         anotherCounterRegion ! EntityEnvelope(1, Increment)
         anotherCounterRegion ! Get(1)

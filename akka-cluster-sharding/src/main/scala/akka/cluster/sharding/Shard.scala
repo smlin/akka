@@ -139,8 +139,8 @@ private[akka] class Shard(
     case g @ GetSuccess(ShardsStateKey, _) ⇒
       // TODO: resurrect the entities from state
       activate()
-    case DataDeleted(ShardsStateKey)       ⇒ activate()
-    case NotFound(ShardsStateKey, _)       ⇒ activate()
+    case DataDeleted(ShardsStateKey) ⇒ activate()
+    case NotFound(ShardsStateKey, _) ⇒ activate()
   }
 
   def receiveCommand: Receive = {

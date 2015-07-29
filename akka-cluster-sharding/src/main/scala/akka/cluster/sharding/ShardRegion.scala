@@ -272,7 +272,7 @@ class ShardRegion(
   var membersByAge: immutable.SortedSet[Member] = immutable.SortedSet.empty(ageOrdering)
 
   var regions = Map.empty[ActorRef, Set[ShardId]]
-  var regionByShard = Map.empty[ShardId, ActorRef]
+  var regionByShard = Map.empty[ShardId, RegionRef]
   var shardBuffers = Map.empty[ShardId, Vector[(Msg, ActorRef)]]
   var shards = Map.empty[ShardId, ActorRef]
   var shardsByRef = Map.empty[ActorRef, ShardId]
@@ -327,24 +327,24 @@ class ShardRegion(
 
   def waitingForState: Receive = ({
     case g @ GetSuccess(ShardsStateKey, _) ⇒
-      regionByShard = g.get(ShardsStateKey).entries.filterNot(_._2 == self)
-      regions = regionByShard.groupBy(_._2).mapValues(_.keySet)
+      // regions in this point could be already terminated. Should it be equipped with a guaranteed delivery?
+      changesReceived(g.get(ShardsStateKey).entries)
       activate()
-
-    case DataDeleted(ShardsStateKey) ⇒ activate()
     case NotFound(ShardsStateKey, _) ⇒ activate()
+    case DataDeleted(ShardsStateKey) ⇒ activate()
   }: Receive).orElse(common)
 
   def active: Receive = ({
-    case Terminated(ref)           ⇒ receiveTerminated(ref)
-    case ShardInitialized(shardId) ⇒ initializeShard(shardId, sender())
-    case evt: ClusterDomainEvent   ⇒ receiveClusterEvent(evt)
-    case msg: CoordinatorMessage   ⇒ receiveCoordinatorMessage(msg)
-    case cmd: ShardRegionCommand   ⇒ receiveCommand(cmd)
-    case msg: RestartShard         ⇒ deliverMessage(msg, sender())
+    case g @ Changed(ShardsStateKey) ⇒ changesReceived(g.get(ShardsStateKey).entries)
+    case Terminated(ref)             ⇒ receiveTerminated(ref)
+    case ShardInitialized(shardId)   ⇒ initializeShard(shardId, sender())
+    case msg: CoordinatorMessage     ⇒ receiveCoordinatorMessage(msg)
+    case cmd: ShardRegionCommand     ⇒ receiveCommand(cmd)
+    case msg: RestartShard           ⇒ deliverMessage(msg, sender())
   }: Receive).orElse(common)
 
   def common: Receive = {
+    case evt: ClusterDomainEvent                 ⇒ receiveClusterEvent(evt)
     case state: CurrentClusterState              ⇒ receiveClusterState(state)
     case msg if extractEntityId.isDefinedAt(msg) ⇒ deliverMessage(msg, sender())
   }
@@ -354,7 +354,18 @@ class ShardRegion(
 
   def activate() = {
     context.become(active)
+    replicator ! Subscribe(ShardsStateKey, self)
     log.info("ShardRegion was moved to the active state {}", regionByShard)
+  }
+
+  def changesReceived(regByShard: Map[ShardId, RegionRef]) = {
+    //    val currentShards = regionByShard.keySet
+    //    val shards = regByShard.keySet
+    //    val addedShards = shards diff currentShards
+    //    val removedShards = currentShards diff shards
+    //    val movedShards = (currentShards intersect shards).filter(s ⇒ regionByShard(s) != regByShard(s))
+    regionByShard = regByShard.filterNot(_._2 == self)
+    regions = regionByShard.groupBy(_._2).mapValues(_.keySet)
   }
 
   def addShard(shardId: ShardId, region: RegionRef): Unit = {
@@ -395,11 +406,12 @@ class ShardRegion(
   def receiveCoordinatorMessage(msg: CoordinatorMessage): Unit = msg match {
     case HostShard(shard) ⇒
       log.debug("Host Shard [{}] ", shard)
-      addShard(shard, self)
+      //      addShard(shard, self)
 
       //Start the shard, if already started this does nothing
       getShard(shard)
 
+      // TODO: move to changesReceived method
       sender() ! ShardStarted(shard)
 
     case ShardHome(shard, ref) ⇒
@@ -410,6 +422,7 @@ class ShardRegion(
           throw new IllegalStateException(s"Unexpected change of shard [${shard}] from self to [${ref}]")
         case _ ⇒
       }
+      // TODO: move this to changesReceived?
       addShard(shard, ref)
 
       if (ref != self)
