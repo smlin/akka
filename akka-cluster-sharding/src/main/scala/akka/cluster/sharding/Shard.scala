@@ -9,6 +9,9 @@ import akka.actor.ActorRef
 import akka.actor.Deploy
 import akka.actor.Props
 import akka.actor.Terminated
+import akka.cluster.Cluster
+import akka.cluster.ddata.Replicator._
+import akka.cluster.ddata.{ LWWMap, LWWMapKey }
 import akka.cluster.sharding.Shard.ShardCommand
 import akka.persistence.PersistentActor
 import akka.persistence.SnapshotOffer
@@ -65,16 +68,17 @@ private[akka] object Shard {
    */
   def props(typeName: String,
             shardId: ShardRegion.ShardId,
+            replicator: ActorRef,
             entityProps: Props,
             settings: ClusterShardingSettings,
             extractEntityId: ShardRegion.ExtractEntityId,
             extractShardId: ShardRegion.ExtractShardId,
             handOffStopMessage: Any): Props = {
     if (settings.rememberEntities)
-      Props(new PersistentShard(typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage))
+      Props(new PersistentShard(typeName, shardId, replicator, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage))
         .withDeploy(Deploy.local)
     else
-      Props(new Shard(typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage))
+      Props(new Shard(typeName, shardId, replicator, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage))
         .withDeploy(Deploy.local)
   }
 }
@@ -90,13 +94,14 @@ private[akka] object Shard {
 private[akka] class Shard(
   typeName: String,
   shardId: ShardRegion.ShardId,
+  replicator: ActorRef,
   entityProps: Props,
   settings: ClusterShardingSettings,
   extractEntityId: ShardRegion.ExtractEntityId,
   extractShardId: ShardRegion.ExtractShardId,
   handOffStopMessage: Any) extends Actor with ActorLogging {
 
-  import ShardRegion.{ handOffStopperProps, EntityId, Msg, Passivate }
+  import ShardRegion.{ handOffStopperProps, EntityId, Msg, RegionRef, Passivate, ShardInitialized }
   import ShardCoordinator.Internal.{ HandOff, ShardStopped }
   import Shard.{ State, RestartEntity, EntityStopped, EntityStarted }
   import akka.cluster.sharding.ShardCoordinator.Internal.CoordinatorMessage
@@ -111,12 +116,32 @@ private[akka] class Shard(
 
   var handOffStopper: Option[ActorRef] = None
 
+  implicit val node: Cluster = Cluster(context.system)
+  // Map[ShardId, RegionRef]
+  val ShardsStateKey = LWWMapKey[RegionRef](s"${typeName}ShardsState")
+
+  getState()
+
+  def initialized(): Unit = {
+    context.parent ! ShardInitialized(shardId)
+    val p = context.parent
+    replicator ! Update(ShardsStateKey, LWWMap.empty[RegionRef], WriteLocal)(_ + ((shardId, p)))
+  }
+
   def totalBufferSize = messageBuffers.foldLeft(0) { (sum, entity) ⇒ sum + entity._2.size }
 
   def processChange[A](event: A)(handler: A ⇒ Unit): Unit =
     handler(event)
 
-  def receive = receiveCommand
+  def receive = waitingForState
+
+  def waitingForState: Receive = {
+    case g @ GetSuccess(ShardsStateKey, _) ⇒
+      // TODO: resurrect the entities from state
+      activate()
+    case DataDeleted(ShardsStateKey) ⇒ activate()
+    case NotFound(ShardsStateKey, _) ⇒ activate()
+  }
 
   def receiveCommand: Receive = {
     case Terminated(ref)                         ⇒ receiveTerminated(ref)
@@ -139,6 +164,15 @@ private[akka] class Shard(
     case HandOff(`shardId`) ⇒ handOff(sender())
     case HandOff(shard)     ⇒ log.warning("Shard [{}] can not hand off for another Shard [{}]", shardId, shard)
     case _                  ⇒ unhandled(msg)
+  }
+
+  def getState(): Unit =
+    replicator ! Get(ShardsStateKey, ReadLocal)
+
+  def activate() = {
+    context.become(receiveCommand)
+    initialized()
+    log.info("Shard was moved to the active state")
   }
 
   def handOff(replyTo: ActorRef): Unit = handOffStopper match {
@@ -275,12 +309,13 @@ private[akka] class Shard(
 private[akka] class PersistentShard(
   typeName: String,
   shardId: ShardRegion.ShardId,
+  replicator: ActorRef,
   entityProps: Props,
   settings: ClusterShardingSettings,
   extractEntityId: ShardRegion.ExtractEntityId,
   extractShardId: ShardRegion.ExtractShardId,
   handOffStopMessage: Any) extends Shard(
-  typeName, shardId, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
+  typeName, shardId, replicator, entityProps, settings, extractEntityId, extractShardId, handOffStopMessage)
   with PersistentActor with ActorLogging {
 
   import ShardRegion.{ EntityId, Msg }
@@ -294,6 +329,9 @@ private[akka] class PersistentShard(
   override def snapshotPluginId: String = settings.snapshotPluginId
 
   var persistCount = 0
+
+  // would be initialized after recovery completed
+  override def initialized(): Unit = {}
 
   override def receive = receiveCommand
 
@@ -314,7 +352,10 @@ private[akka] class PersistentShard(
     case EntityStarted(id)                 ⇒ state = state.copy(state.entities + id)
     case EntityStopped(id)                 ⇒ state = state.copy(state.entities - id)
     case SnapshotOffer(_, snapshot: State) ⇒ state = snapshot
-    case RecoveryCompleted                 ⇒ state.entities foreach getEntity
+    case RecoveryCompleted ⇒
+      state.entities foreach getEntity
+      super.initialized()
+      log.debug("Shard recovery completed {}", shardId)
   }
 
   override def entityTerminated(ref: ActorRef): Unit = {

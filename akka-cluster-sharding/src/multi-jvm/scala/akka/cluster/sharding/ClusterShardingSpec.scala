@@ -3,6 +3,7 @@
  */
 package akka.cluster.sharding
 
+import akka.cluster.ddata.{ DistributedData, ReplicatorSettings, Replicator }
 import akka.cluster.sharding.ShardCoordinator.Internal.{ ShardStopped, HandOff }
 import akka.cluster.sharding.ShardRegion.Passivate
 import akka.cluster.sharding.ShardRegion.GetCurrentRegions
@@ -37,13 +38,14 @@ object ClusterShardingSpec extends MultiNodeConfig {
   val fifth = role("fifth")
   val sixth = role("sixth")
 
-  commonConfig(ConfigFactory.parseString("""
+  commonConfig(debugConfig(true) withFallback ConfigFactory.parseString("""
     akka.loglevel = INFO
     akka.actor.provider = "akka.cluster.ClusterActorRefProvider"
     akka.remote.log-remote-lifecycle-events = off
     akka.cluster.auto-down-unreachable-after = 0s
     akka.cluster.down-removal-margin = 5s
     akka.cluster.roles = ["backend"]
+    akka.cluster.distributed-data.gossip-interval = 1s
     akka.persistence.journal.plugin = "akka.persistence.journal.leveldb-shared"
     akka.persistence.journal.leveldb-shared.store {
       native = off
@@ -194,6 +196,9 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
   }
 
   def createCoordinator(): Unit = {
+    val replicator = system.actorOf(Replicator.props(
+      ReplicatorSettings(system).withGossipInterval(1.second).withMaxDeltaElements(10)), "replicator")
+
     def coordinatorProps(typeName: String, rebalanceEnabled: Boolean) = {
       val allocationStrategy = new ShardCoordinator.LeastShardAllocationStrategy(rebalanceThreshold = 2, maxSimultaneousRebalance = 1)
       val cfg = ConfigFactory.parseString(s"""
@@ -202,10 +207,10 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       rebalance-interval = ${if (rebalanceEnabled) "2s" else "3600s"}
       """).withFallback(system.settings.config.getConfig("akka.cluster.sharding"))
       val settings = ClusterShardingSettings(cfg)
-      ShardCoordinator.props(typeName, settings, allocationStrategy)
+      ShardCoordinator.props(typeName, settings, allocationStrategy, replicator)
     }
 
-    List("counter", "rebalancingCounter", "PersistentCounterEntities", "AnotherPersistentCounter",
+    List("counter", "anotherCounter", "rebalancingCounter", "PersistentCounterEntities", "AnotherPersistentCounter",
       "PersistentCounter", "RebalancingPersistentCounter", "AutoMigrateRegionTest").foreach { typeName ⇒
         val rebalanceEnabled = typeName.toLowerCase.startsWith("rebalancing")
         val singletonProps = BackoffSupervisor.props(
@@ -223,6 +228,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
   }
 
   def createRegion(typeName: String, rememberEntities: Boolean): ActorRef = {
+    val replicator = DistributedData(system).replicator
     val cfg = ConfigFactory.parseString("""
       retry-interval = 1s
       shard-failure-backoff = 1s
@@ -233,6 +239,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       .withRememberEntities(rememberEntities)
     system.actorOf(ShardRegion.props(
       typeName = typeName,
+      replicator = replicator,
       entityProps = qualifiedCounterProps(typeName),
       settings = settings,
       coordinatorPath = "/user/" + typeName + "Coordinator/singleton/coordinator",
@@ -243,6 +250,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
   }
 
   lazy val region = createRegion("counter", rememberEntities = false)
+  lazy val anotherCounterRegion = createRegion("anotherCounter", rememberEntities = false)
   lazy val rebalancingRegion = createRegion("rebalancingCounter", rememberEntities = false)
 
   lazy val persistentEntitiesRegion = createRegion("PersistentCounterEntities", rememberEntities = true)
@@ -358,6 +366,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
         val settings = ClusterShardingSettings(cfg)
         val proxy = system.actorOf(ShardRegion.proxyProps(
           typeName = "counter",
+          DistributedData(system).replicator,
           settings,
           coordinatorPath = "/user/counterCoordinator/singleton/coordinator",
           extractEntityId = extractEntityId,
@@ -808,7 +817,7 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
           for (n ← 2 to 12) {
             val entity = system.actorSelection(rebalancingPersistentRegion.path / (n % 12).toString / n.toString)
             entity ! Identify(n)
-            receiveOne(3 seconds) match {
+            receiveOne(5 seconds) match {
               case ActorIdentity(id, Some(_)) if id == n ⇒ count = count + 1
               case ActorIdentity(id, None)               ⇒ //Not on the fifth shard
             }
@@ -818,6 +827,42 @@ class ClusterShardingSpec extends MultiNodeSpec(ClusterShardingSpec) with STMult
       }
 
       enterBarrier("after-16")
+    }
+
+    // TODO: move this test to right place
+    "do not duplicate shards after partial cluster crash" in within(40.seconds) {
+      runOn(controller) {
+        testConductor.exit(fourth, 0).await
+      }
+      enterBarrier("fourth-stopped")
+
+      // TODO: mute gossips to sixth. How this can be done?
+      runOn(fifth) {
+        anotherCounterRegion ! EntityEnvelope(1, Increment)
+        anotherCounterRegion ! Get(1)
+        expectMsg(1)
+      }
+      runOn(sixth) {
+        anotherCounterRegion ! EntityEnvelope(2, Increment)
+        anotherCounterRegion ! Get(2)
+        expectMsg(1)
+      }
+      enterBarrier("another-shards-allocated")
+
+      runOn(controller) {
+        testConductor.exit(third, 0)
+          .zip(testConductor.exit(fifth, 0))
+          .await
+      }
+      enterBarrier("after-cluster-failure")
+
+      runOn(sixth) {
+        anotherCounterRegion ! EntityEnvelope(2, Increment)
+        anotherCounterRegion ! Get(2)
+        expectMsg(2)
+      }
+
+      enterBarrier("after-17")
     }
   }
 }
